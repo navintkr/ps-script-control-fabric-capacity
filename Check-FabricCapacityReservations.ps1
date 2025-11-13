@@ -12,13 +12,84 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Fabric Capacity Reservation Status Check" -ForegroundColor Cyan
 Write-Host "========================================`n" -ForegroundColor Cyan
 
+# Check if Azure CLI is available
+Write-Host "Checking Azure CLI availability..." -ForegroundColor Yellow
+$azCliPath = Get-Command az -ErrorAction SilentlyContinue
+
+if (-not $azCliPath) {
+    Write-Host "ERROR: Azure CLI (az) not found in PATH." -ForegroundColor Red
+    Write-Host "`nPlease ensure Azure CLI is installed and available in your PATH." -ForegroundColor Yellow
+    Write-Host "You can:" -ForegroundColor Yellow
+    Write-Host "  1. Restart PowerShell after installing Azure CLI" -ForegroundColor Yellow
+    Write-Host "  2. Run this script from Command Prompt instead" -ForegroundColor Yellow
+    Write-Host "  3. Add Azure CLI to your PATH manually`n" -ForegroundColor Yellow
+    
+    # Try to find Azure CLI in common installation paths
+    $commonPaths = @(
+        "${env:ProgramFiles}\Microsoft SDKs\Azure\CLI2\wbin",
+        "${env:ProgramFiles(x86)}\Microsoft SDKs\Azure\CLI2\wbin",
+        "$env:LOCALAPPDATA\Programs\Microsoft\Azure CLI\wbin"
+    )
+    
+    $foundPath = $null
+    foreach ($path in $commonPaths) {
+        if (Test-Path "$path\az.cmd") {
+            $foundPath = $path
+            Write-Host "Found Azure CLI at: $foundPath" -ForegroundColor Green
+            $env:PATH = "$foundPath;$env:PATH"
+            break
+        }
+    }
+    
+    if (-not $foundPath) {
+        Write-Host "Could not locate Azure CLI installation." -ForegroundColor Red
+        exit 1
+    }
+}
+
+Write-Host "Azure CLI found. Checking login status..." -ForegroundColor Green
+
+# Check current Azure account
+$accountInfo = az account show 2>&1 | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Not logged into Azure CLI. Please run 'az login' first." -ForegroundColor Red
+    exit 1
+}
+
+# Check if logged in with tenant-level account
+if ($accountInfo.id -eq $accountInfo.tenantId) {
+    Write-Host "`nWARNING: You are logged in with a tenant-level account." -ForegroundColor Red
+    Write-Host "Current Account: $($accountInfo.name)" -ForegroundColor Yellow
+    Write-Host "Tenant ID: $($accountInfo.tenantId)" -ForegroundColor Yellow
+    Write-Host "`nYou need to set a specific subscription context." -ForegroundColor Yellow
+    Write-Host "`nAvailable subscriptions:" -ForegroundColor Cyan
+    
+    az account list --query "[].{Name:name, SubscriptionId:id, State:state}" --output table
+    
+    Write-Host "`nPlease run one of these commands to set your subscription:" -ForegroundColor Yellow
+    Write-Host "  az account set --subscription <subscription-id-or-name>" -ForegroundColor White
+    Write-Host "`nThen run this script again." -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "Logged in to subscription: $($accountInfo.name)" -ForegroundColor Green
+Write-Host "Subscription ID: $($accountInfo.id)`n" -ForegroundColor Green
+
 # Get all Fabric capacities across all subscriptions
 Write-Host "Fetching all Fabric capacities..." -ForegroundColor Yellow
-$allCapacities = az fabric capacity list | ConvertFrom-Json
+$allCapacities = az fabric capacity list 2>&1
 
-if (-not $allCapacities) {
-    Write-Host "No Fabric capacities found or unable to retrieve capacities." -ForegroundColor Red
-    exit
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Failed to retrieve Fabric capacities." -ForegroundColor Red
+    Write-Host $allCapacities -ForegroundColor Red
+    exit 1
+}
+
+$allCapacities = $allCapacities | ConvertFrom-Json
+
+if (-not $allCapacities -or $allCapacities.Count -eq 0) {
+    Write-Host "No Fabric capacities found in subscription '$($accountInfo.name)'." -ForegroundColor Yellow
+    exit 0
 }
 
 Write-Host "Found $($allCapacities.Count) Fabric capacity/capacities`n" -ForegroundColor Green
