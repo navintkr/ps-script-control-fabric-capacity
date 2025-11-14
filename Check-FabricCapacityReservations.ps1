@@ -56,43 +56,80 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Check if logged in with tenant-level account
-if ($accountInfo.id -eq $accountInfo.tenantId) {
-    Write-Host "`nWARNING: You are logged in with a tenant-level account." -ForegroundColor Red
-    Write-Host "Current Account: $($accountInfo.name)" -ForegroundColor Yellow
-    Write-Host "Tenant ID: $($accountInfo.tenantId)" -ForegroundColor Yellow
-    Write-Host "`nYou need to set a specific subscription context." -ForegroundColor Yellow
-    Write-Host "`nAvailable subscriptions:" -ForegroundColor Cyan
-    
-    az account list --query "[].{Name:name, SubscriptionId:id, State:state}" --output table
-    
-    Write-Host "`nPlease run one of these commands to set your subscription:" -ForegroundColor Yellow
-    Write-Host "  az account set --subscription <subscription-id-or-name>" -ForegroundColor White
-    Write-Host "`nThen run this script again." -ForegroundColor Yellow
+# Get all subscriptions
+Write-Host "Fetching all subscriptions..." -ForegroundColor Yellow
+$allSubscriptions = az account list --query "[?state=='Enabled']" | ConvertFrom-Json
+
+if (-not $allSubscriptions -or $allSubscriptions.Count -eq 0) {
+    Write-Host "ERROR: No enabled subscriptions found." -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Logged in to subscription: $($accountInfo.name)" -ForegroundColor Green
-Write-Host "Subscription ID: $($accountInfo.id)`n" -ForegroundColor Green
+# Filter out tenant-level accounts
+$validSubscriptions = $allSubscriptions | Where-Object { $_.id -ne $_.tenantId }
 
-# Get all Fabric capacities across all subscriptions
-Write-Host "Fetching all Fabric capacities..." -ForegroundColor Yellow
-$allCapacities = az fabric capacity list 2>&1
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Failed to retrieve Fabric capacities." -ForegroundColor Red
-    Write-Host $allCapacities -ForegroundColor Red
+if (-not $validSubscriptions -or $validSubscriptions.Count -eq 0) {
+    Write-Host "ERROR: No valid subscriptions found (only tenant-level accounts available)." -ForegroundColor Red
     exit 1
 }
 
-$allCapacities = $allCapacities | ConvertFrom-Json
+Write-Host "Found $($validSubscriptions.Count) enabled subscription(s)`n" -ForegroundColor Green
 
-if (-not $allCapacities -or $allCapacities.Count -eq 0) {
-    Write-Host "No Fabric capacities found in subscription '$($accountInfo.name)'." -ForegroundColor Yellow
+# Initialize arrays to collect all capacities across subscriptions
+$allCapacitiesGlobal = @()
+$subscriptionsProcessed = 0
+$subscriptionsWithCapacities = 0
+
+# Iterate through each subscription
+foreach ($subscription in $validSubscriptions) {
+    $subscriptionsProcessed++
+    
+    Write-Host "[$subscriptionsProcessed/$($validSubscriptions.Count)] Processing subscription: $($subscription.name)" -ForegroundColor Cyan
+    Write-Host "    Subscription ID: $($subscription.id)" -ForegroundColor Gray
+    
+    # Set the current subscription context
+    az account set --subscription $subscription.id 2>&1 | Out-Null
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    [SKIP] Failed to set subscription context. Skipping..." -ForegroundColor Yellow
+        continue
+    }
+    
+    # Get Fabric capacities for this subscription
+    $capacitiesJson = az fabric capacity list 2>&1
+    
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    [SKIP] Failed to retrieve Fabric capacities. Skipping..." -ForegroundColor Yellow
+        continue
+    }
+    
+    $capacities = $capacitiesJson | ConvertFrom-Json
+    
+    if (-not $capacities -or $capacities.Count -eq 0) {
+        Write-Host "    No Fabric capacities found." -ForegroundColor Gray
+    } else {
+        Write-Host "    Found $($capacities.Count) Fabric capacity/capacities" -ForegroundColor Green
+        $allCapacitiesGlobal += $capacities
+        $subscriptionsWithCapacities++
+    }
+    
+    Write-Host ""
+}
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Subscription Processing Complete" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "Total Subscriptions Processed: $subscriptionsProcessed" -ForegroundColor White
+Write-Host "Subscriptions with Fabric Capacities: $subscriptionsWithCapacities" -ForegroundColor White
+Write-Host "Total Fabric Capacities Found: $($allCapacitiesGlobal.Count)`n" -ForegroundColor White
+
+if (-not $allCapacitiesGlobal -or $allCapacitiesGlobal.Count -eq 0) {
+    Write-Host "No Fabric capacities found across any subscriptions." -ForegroundColor Yellow
     exit 0
 }
 
-Write-Host "Found $($allCapacities.Count) Fabric capacity/capacities`n" -ForegroundColor Green
+# Use the global collection for processing
+$allCapacities = $allCapacitiesGlobal
 
 # Separate capacities with and without reservations
 $capacitiesWithReservations = @()
