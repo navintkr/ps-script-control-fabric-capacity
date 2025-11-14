@@ -65,15 +65,38 @@ if (-not $allSubscriptions -or $allSubscriptions.Count -eq 0) {
     exit 1
 }
 
-# Filter out tenant-level accounts
-$validSubscriptions = $allSubscriptions | Where-Object { $_.id -ne $_.tenantId }
+# Check if we have tenant-level access and need to get actual subscriptions
+$hasTenantLevelOnly = ($allSubscriptions.Count -eq 1 -and $allSubscriptions[0].id -eq $allSubscriptions[0].tenantId)
 
-if (-not $validSubscriptions -or $validSubscriptions.Count -eq 0) {
-    Write-Host "ERROR: No valid subscriptions found (only tenant-level accounts available)." -ForegroundColor Red
-    exit 1
+if ($hasTenantLevelOnly) {
+    Write-Host "Detected tenant-level account. Fetching accessible subscriptions..." -ForegroundColor Yellow
+    
+    # Get all subscriptions accessible to this tenant account
+    $subscriptionsJson = az account list --all --query "[?state=='Enabled' && id!=tenantId]" 2>&1
+    
+    if ($LASTEXITCODE -eq 0) {
+        $validSubscriptions = $subscriptionsJson | ConvertFrom-Json
+        
+        if (-not $validSubscriptions -or $validSubscriptions.Count -eq 0) {
+            Write-Host "ERROR: No accessible subscriptions found in this tenant." -ForegroundColor Red
+            Write-Host "Please ensure you have at least Reader access to subscriptions." -ForegroundColor Yellow
+            exit 1
+        }
+    } else {
+        Write-Host "ERROR: Failed to retrieve subscriptions." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    # Filter out tenant-level account entries from the list
+    $validSubscriptions = $allSubscriptions | Where-Object { $_.id -ne $_.tenantId }
+    
+    if (-not $validSubscriptions -or $validSubscriptions.Count -eq 0) {
+        Write-Host "ERROR: No valid subscriptions found." -ForegroundColor Red
+        exit 1
+    }
 }
 
-Write-Host "Found $($validSubscriptions.Count) enabled subscription(s)`n" -ForegroundColor Green
+Write-Host "Found $($validSubscriptions.Count) enabled subscription(s) to process`n" -ForegroundColor Green
 
 # Initialize arrays to collect all capacities across subscriptions
 $allCapacitiesGlobal = @()
